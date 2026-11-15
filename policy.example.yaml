@@ -1,0 +1,80 @@
+# AegisLLM policy. Copy to policy.yaml and adjust.
+# Every layer can be switched off; actions are one of: allow, redact, block, review.
+
+upstream:
+  base_url: http://localhost:11434/v1      # any OpenAI-compatible API (Ollama by default)
+  api_key_env: UPSTREAM_API_KEY            # name of the env var holding the key, if any
+  timeout_s: 120
+
+injection:
+  enabled: true
+  # Score at which a message is treated as an injection attempt (0 to 1).
+  block_threshold: 0.6
+  # Untrusted content (tool results, retrieved documents) is held to a stricter threshold,
+  # because data should never contain instructions for the model.
+  untrusted_block_threshold: 0.35
+  # What to do with an injection found in untrusted content: block the request,
+  # or drop just that document and continue.
+  untrusted_action: drop_document          # block | drop_document
+  # Optional second opinion from a local model, for attacks the rules do not know
+  # (other languages, hypotheticals, indirect extraction). Adds one model call.
+  judge:
+    enabled: false
+    model: qwen2.5-coder:7b
+    min_confidence: 0.6
+
+secrets:
+  enabled: true
+  inbound_action: redact                   # redact | block
+  outbound_action: redact
+
+pii:
+  enabled: true
+  types: [email, phone, credit_card, iban, ipv4, my_nric]
+  inbound_action: redact
+  outbound_action: redact
+
+output:
+  enabled: true
+  # A random canary is added to the system prompt; if it ever appears in a reply,
+  # the system prompt is leaking and the reply is blocked.
+  system_prompt_canary: true
+  # Links and images in replies may only point to these domains (exfiltration guard).
+  allowed_link_domains: [example.com, docs.example.com]
+  max_output_chars: 20000
+
+tools:
+  enabled: true
+  default: deny                            # tools not listed below are denied
+  rules:
+    search_kb:
+      action: allow
+      args:
+        query: { type: string, max_length: 300 }
+    lookup_order:
+      action: allow
+      args:
+        order_id: { type: string, pattern: "^ORD-[0-9]{4,8}$" }
+    send_email:
+      action: review                       # needs human approval before it runs
+      args:
+        to: { type: string, pattern: "^[A-Za-z0-9._%+-]+@example\\.com$" }
+        subject: { type: string, max_length: 150 }
+        body: { type: string, max_length: 4000 }
+    read_file:
+      action: allow
+      args:
+        path: { type: string, pattern: "^docs/[A-Za-z0-9_./-]+$", deny_patterns: ["\\.\\.", "^/", "secret", "\\.env"] }
+    run_shell:
+      action: deny
+
+rate_limit:
+  enabled: true
+  requests_per_minute: 60
+  burst: 20
+  max_request_chars: 50000
+  max_tokens_cap: 2048                     # caps max_tokens sent upstream
+
+audit:
+  path: logs/audit.jsonl
+  store_snippets: true                     # short redacted snippets only, never raw secrets
